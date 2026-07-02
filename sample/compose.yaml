@@ -30,21 +30,17 @@ services:
     # exclusively via the proxy. It is never exposed to the host.
     expose:
       - "8000"
-    healthcheck:
-      # Heartbeat requires no auth on the wire path we probe from inside the network,
-      # but Chroma answers /api/v2/heartbeat regardless; token is enforced per-route.
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request; r=urllib.request.Request('http://localhost:8000/api/v2/heartbeat', headers={'Authorization':'Bearer '+os.environ['CHROMA_SERVER_AUTHN_CREDENTIALS']}); urllib.request.urlopen(r)\""]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+    # No Docker healthcheck: the chromadb/chroma image is minimal (no curl / wget /
+    # python / nc on PATH), so an in-container HTTP probe isn't possible. Readiness
+    # is polled client-side instead (see scripts/smoke-test.sh), and nginx tolerates
+    # a not-yet-ready upstream (it returns 502 until Chroma accepts connections).
 
   proxy:
     image: nginx:1.27
     restart: unless-stopped
     depends_on:
       chroma:
-        condition: service_healthy
+        condition: service_started
     ports:
       # Edge TLS, loopback only. NOT 8000 (that belongs to other local services) and
       # NOT 0.0.0.0 — bind to 127.0.0.1 so the demo never leaves this host.
