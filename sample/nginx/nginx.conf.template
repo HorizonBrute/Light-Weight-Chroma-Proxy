@@ -1,0 +1,155 @@
+# =============================================================================
+# Lightweight Chroma Proxy — nginx reference configuration
+# =============================================================================
+# This is the whole pattern in one file. Copy the map + location blocks into
+# whatever reverse proxy you already run; nothing here is nginx-Plus-only.
+#
+# What it does:
+#   1. Terminates TLS on 8443 (self-signed by default).
+#   2. Classifies each request as READ / WRITE purely by PATH (see the note in
+#      docs/ARCHITECTURE.md — query/get/count are reads that use POST, so method
+#      alone cannot separate read from write). Default-deny: unmatched => blocked.
+#   3. Gates the WRITE set behind a bearer token (writer_tokens.map).
+#   4. Injects Chroma's own service token upstream, so readers need no secret and
+#      the writer's token never reaches Chroma.
+#   5. Emits a structured JSON access log with a reader/writer role field.
+#
+# ${CHROMA_TOKEN} is substituted at container start by nginx's envsubst step
+# (NGINX_ENVSUBST_FILTER=CHROMA, so only $CHROMA_* is touched).
+# =============================================================================
+
+user  nginx;
+worker_processes  auto;
+error_log  /var/log/nginx/error.log  warn;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    # -- Structured JSON access log ------------------------------------------
+    # escape=json makes every field safe to embed. We log the derived $role, never
+    # the Authorization header, so writer tokens never land in the logs.
+    log_format lwcp_json escape=json
+        '{'
+          '"time":"$time_iso8601",'
+          '"remote_addr":"$remote_addr",'
+          '"method":"$request_method",'
+          '"uri":"$uri",'
+          '"status":$status,'
+          '"body_bytes_sent":$body_bytes_sent,'
+          '"request_time":$request_time,'
+          '"role":"$role",'
+          '"allowed":"$allowed"'
+        '}';
+
+    access_log /var/log/nginx/access.log lwcp_json;
+
+    sendfile        on;
+    keepalive_timeout  65;
+
+    # Chroma payloads (add/query with embeddings) can be large.
+    client_max_body_size 100m;
+
+    # -- Upstream: internal Chroma, plain HTTP inside the trust domain --------
+    upstream chroma_backend {
+        server chroma:8000;
+        keepalive 16;
+    }
+
+    # -- (1) READ allow-list --------------------------------------------------
+    # Key is "METHOD:URI". Default 0 (deny). A route is a READ only if it matches
+    # one of these exact, anchored patterns. Dynamic {tenant}/{database}/{id}
+    # segments are [^/]+ (one path segment, no slash). Optional trailing slash and
+    # query string tolerated. Everything else stays 0 -> handled as a write/unknown.
+    map $request_method:$request_uri $is_read {
+        default 0;
+
+        # server-level liveness / metadata
+        "~^GET:/api/v2/heartbeat/?(\?.*)?$"                                                          1;
+        "~^GET:/api/v2/version/?(\?.*)?$"                                                            1;
+        "~^GET:/api/v2/pre-flight-checks/?(\?.*)?$"                                                  1;
+
+        # tenant / database reads
+        "~^GET:/api/v2/tenants/[^/]+/?(\?.*)?$"                                                      1;
+        "~^GET:/api/v2/tenants/[^/]+/databases/?(\?.*)?$"                                            1;
+        "~^GET:/api/v2/tenants/[^/]+/databases/[^/]+/?(\?.*)?$"                                      1;
+
+        # collection reads
+        "~^GET:/api/v2/tenants/[^/]+/databases/[^/]+/collections/?(\?.*)?$"                          1;
+        "~^GET:/api/v2/tenants/[^/]+/databases/[^/]+/collections/[^/]+/?(\?.*)?$"                    1;
+        "~^GET:/api/v2/tenants/[^/]+/databases/[^/]+/collections/[^/]+/count/?(\?.*)?$"              1;
+
+        # reads that travel as POST (a request body carries the query / id list)
+        "~^POST:/api/v2/tenants/[^/]+/databases/[^/]+/collections/[^/]+/query/?(\?.*)?$"             1;
+        "~^POST:/api/v2/tenants/[^/]+/databases/[^/]+/collections/[^/]+/get/?(\?.*)?$"               1;
+    }
+
+    # -- (2) Writer bearer-token gate ----------------------------------------
+    # $is_writer = 1 when the Authorization header matches a configured writer
+    # token. Patterns live in writer_tokens.map (gitignored; copy the .example).
+    map $http_authorization $is_writer {
+        default 0;
+        include /etc/nginx/writer_tokens.map;
+    }
+
+    # -- (3) Combine without stacking `if`s ----------------------------------
+    # Concatenate the two flags: "<is_read><is_writer>". Allowed unless BOTH are 0.
+    #   00 -> denied  (unauthenticated write / unknown route)
+    #   10 -> allowed (reader hitting the read set)
+    #   01 -> allowed (writer, any route)
+    #   11 -> allowed (writer hitting a read route)
+    map $is_read$is_writer $allowed {
+        default 1;
+        "00"    0;
+    }
+
+    # role label for the access log
+    map $is_writer $role {
+        default "reader";
+        "1"     "writer";
+    }
+
+    server {
+        listen 8443 ssl;
+        http2  on;
+        server_name _;
+
+        # -- (1) TLS termination ---------------------------------------------
+        ssl_certificate     /etc/nginx/certs/cert.pem;
+        ssl_certificate_key /etc/nginx/certs/key.pem;
+        ssl_protocols       TLSv1.2 TLSv1.3;
+        ssl_ciphers         HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
+        ssl_session_cache   shared:SSL:10m;
+        ssl_session_timeout 1h;
+
+        location / {
+            # -- Single admission decision. A bare `return` in one `if` is safe;
+            # we never stack multiple `if`s (the classification happened in maps).
+            if ($allowed = 0) {
+                return 403;
+            }
+
+            # -- (4) Credential injection ------------------------------------
+            # Replace whatever the client sent with Chroma's service token, and
+            # strip the alternate header so no client-supplied token reaches Chroma.
+            proxy_set_header Authorization  "Bearer ${CHROMA_TOKEN}";
+            proxy_set_header X-Chroma-Token "";
+
+            # -- Transparent pass-through (preserves method + body) ----------
+            proxy_http_version 1.1;
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection        "";
+
+            proxy_pass http://chroma_backend;
+        }
+    }
+}

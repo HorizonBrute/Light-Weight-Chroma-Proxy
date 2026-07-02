@@ -1,0 +1,14 @@
+# Writer token allow-list (included into `map $http_authorization $is_writer`).
+#
+# Copy this file to `writer_tokens.map` (the real file is gitignored) and set a
+# strong token. One line per token: a regex that matches the full Authorization
+# header value, mapping to 1 (= is a writer). Case-insensitive `~*` so "Bearer"
+# capitalization does not matter; \s+ tolerates extra spaces.
+#
+# The token here MUST match WRITER_TOKEN in your .env (smoke-test.sh reads .env).
+#
+# Generate a real token with:  openssl rand -hex 32
+#
+# Add / rotate writers by adding or removing lines, then `docker compose restart proxy`.
+
+"~*^Bearer\s+demo-writer-token-CHANGE-ME$"  1;

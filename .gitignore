@@ -1,0 +1,13 @@
+# Generated secrets / certs — never commit these. The .example files ARE committed.
+**/cert.pem
+**/key.pem
+**/.env
+**/writer_tokens.map
+
+# ...but keep the templates/examples
+!**/writer_tokens.map.example
+!**/.env.example
+
+# generated cert dir contents (dir kept via .gitkeep)
+sample/certs/*
+!sample/certs/.gitkeep
