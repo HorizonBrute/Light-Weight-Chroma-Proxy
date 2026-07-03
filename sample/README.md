@@ -64,6 +64,10 @@ Tear down with `docker compose down -v` (the `-v` also drops the demo's data vol
 | `map $is_read$is_writer $allowed` | Combines both flags — allowed unless both are `0`. One `if ($allowed = 0) return 403;`. |
 | `proxy_set_header Authorization "Bearer <CHROMA_TOKEN>"` | Injects Chroma's token upstream; the client's/writer's token never reaches Chroma. |
 | `log_format lwcp_json` | Structured JSON access log with a `role` (reader/writer) field. |
+| `server_tokens off` | **Hardening.** Removes the nginx version from the `Server` header and every error page (kills version enumeration). |
+| `error_page … @eNNN` + `proxy_intercept_errors on` | **Hardening.** Uniform JSON errors (`{"status":N,"message":…}`); no nginx/backend detail in bodies. `422` passed through (client validation). |
+| `proxy_hide_header Server` | **Hardening.** Strips Chroma's `uvicorn` `Server` header on proxied `200`s. |
+| `limit_req_zone` / `limit_req` (`limit_req_status 429`) | **Hardening.** Per-IP + per-token rate limits; JSON `429` on breach. |
 
 **Decision matrix:**
 

@@ -69,6 +69,8 @@ plus a few server-level routes. Authoritative operation → class split (from th
 
 > **Critical implementation note.** `query`, `get`, and `count` are **reads that use `POST`** (a request body carries the query) — while `add`/`update`/`upsert`/`delete` are **writes that also use `POST`**. You therefore *cannot* separate read from write by HTTP method. Match on the **path suffix**, and **default-deny** anything unmatched. Default-deny means a route you forgot to classify is *blocked* (fails closed), never silently writable. Verify exact path patterns against the target server's own `/openapi.json` at deploy time, since minor versions drift — but the read/write *operation* split above is stable.
 
+> **Passthrough verified (2026-07).** A real client's full connect handshake — `GET pre-flight-checks` → `version` → `heartbeat` → tenant / databases / database validation → `collections` list — passes the read allow-list end-to-end **through the proxy to Chroma** (`200` with live data: `pre-flight-checks` returned `max_batch_size`/`supports_base64_encoding`, `version` `"1.0.0"`), while `POST …/collections` (create) and any **no-token** request are denied `403`. The collection-level reads (`{id}`, `count`, `query`, `get`) are in the allow-list; exercise them once a collection exists.
+
 ## Credential injection
 
 The reader presents no secret. The proxy holds Chroma's single upstream token and attaches it to every proxied request, so "read-only, no login" is frictionless while Chroma still rejects anything that bypasses the proxy. When a writer presents the write credential, the proxy validates it at the edge and then forwards the same upstream Chroma token. Net effect: the writer credential is *your* admission secret (rotate/revoke it at the proxy); Chroma only ever sees its own service token.
@@ -97,9 +99,18 @@ Localhost read-write with no token is fine (only local processes). Write-on-LAN 
 
 Structured (JSON) access log at the proxy — the single choke point, so it doubles as the front-door audit trail even when no auth is enforced: source, timestamp, method, path, role (reader/writer), status, bytes. Rotate on a configurable schedule (default 30 days) so it never fills the host. Aggregation to a SIEM is left to the deployer.
 
+## Hardening (defense-in-depth)
+
+The admission control above is the *functional* core; these directives make the proxy **quiet and abuse-resistant** at the edge. All are stock-nginx (no third-party modules), mode-agnostic, and included in the sample `nginx.conf.template`. They sit *outside* the five-point contract — not required to make the pattern work — but are strongly recommended for any network-exposed tier: the front door should reveal nothing about itself or what's behind it, and should absorb abuse.
+
+- **Suppress the server banner — `server_tokens off`.** Strips the version from the `Server` header *and* every generated error page (not just `403`). Without it, a probe with any odd method reads `Server: nginx/<version>` plus the HTML error footer — free version/method-enumeration recon. (Removing the *name* `nginx` as well would need the third-party `headers_more` module; a deliberate line the stock sample does not cross — `Server: nginx` with **no version** is the pragmatic stop.)
+- **Uniform JSON errors — `proxy_intercept_errors on` + `error_page … @eNNN`.** Every gateway-generated error (the `403` from the admission gate, plus `400`/`405`/`413`/`429`) and intercepted upstream error returns `{"status":N,"message":"…"}` instead of nginx's HTML — no nginx name in the body, and **backend error detail never escapes**. One deliberate exception: **`422` is *not* intercepted** — Chroma/FastAPI validation errors carry field detail a legitimate client needs.
+- **Hide the backend — `proxy_hide_header Server`.** Drops Chroma's own `Server` (e.g. `uvicorn`) on proxied `200`s so the upstream stack is invisible; nginx re-stamps its own bare `Server: nginx`.
+- **Rate limiting — `limit_req_zone` + `limit_req` (`429`).** Per-client-IP and per-bearer-token leaky buckets (sample: `30r/s` and `60r/s` with matching bursts), returning a JSON `429`. Blunts brute-forcing the write token and abusive read floods. Rates are literal — tune per exposure tier.
+
 ## Threat model & ceiling
 
-**Protects against:** plaintext exposure on the wire (TLS); unauthenticated or read-only clients performing writes/deletes/`reset` (admission control + default-deny); direct database exposure (Chroma is never published — only the proxy is).
+**Protects against:** plaintext exposure on the wire (TLS); unauthenticated or read-only clients performing writes/deletes/`reset` (admission control + default-deny); direct database exposure (Chroma is never published — only the proxy is); **server/backend fingerprinting** (version + identity suppression) and **request floods / token brute-forcing** (rate limiting).
 
 **Ceiling (by design):** this is not per-user identity. It is two roles keyed on one write credential. When you need per-user tokens with **expiry, scopes, or lifecycle**, graduate to a real authorization layer (a Chroma authz provider, Envoy RBAC, OpenFGA, or a full API gateway). This project is the pragmatic tier *below* that — and names exactly where the line is.
 

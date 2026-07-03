@@ -31,6 +31,17 @@ http {
     include       /etc/nginx/mime.types;
     default_type  application/octet-stream;
 
+    # -- Hardening: never advertise server name/version on ANY response --------
+    # Strips the version from the Server header AND every generated error page
+    # (403/400/405/501/weird-method probes) — closes version/method recon.
+    server_tokens off;
+
+    # -- Rate limiting (defense-in-depth) -------------------------------------
+    # Per-client-IP and per-bearer-token leaky buckets; breach -> 429 (JSON below).
+    limit_req_zone $binary_remote_addr  zone=perip:10m    rate=30r/s;
+    limit_req_zone $http_authorization  zone=pertoken:10m rate=60r/s;
+    limit_req_status 429;
+
     # -- Structured JSON access log ------------------------------------------
     # escape=json makes every field safe to embed. We log the derived $role, never
     # the Authorization header, so writer tokens never land in the logs.
@@ -119,6 +130,28 @@ http {
         http2  on;
         server_name _;
 
+        # -- Uniform JSON errors — no nginx/backend identity or detail leaks ----
+        # Catches gateway-generated errors (403 authz gate, 400/405/413/429) AND
+        # intercepted upstream errors. NOTE: 422 (Chroma/FastAPI validation) is
+        # deliberately NOT intercepted — legit clients need that field detail.
+        proxy_intercept_errors on;
+        error_page 400 @e400;
+        error_page 401 @e401;
+        error_page 403 @e403;
+        error_page 404 @e404;
+        error_page 405 @e405;
+        error_page 413 @e413;
+        error_page 429 @e429;
+        error_page 500 501 502 503 504 @e5xx;
+        location @e400 { default_type application/json; return 400 '{"status":400,"message":"bad request"}'; }
+        location @e401 { default_type application/json; return 401 '{"status":401,"message":"unauthorized"}'; }
+        location @e403 { default_type application/json; return 403 '{"status":403,"message":"forbidden"}'; }
+        location @e404 { default_type application/json; return 404 '{"status":404,"message":"not found"}'; }
+        location @e405 { default_type application/json; return 405 '{"status":405,"message":"method not allowed"}'; }
+        location @e413 { default_type application/json; return 413 '{"status":413,"message":"payload too large"}'; }
+        location @e429 { default_type application/json; return 429 '{"status":429,"message":"too many requests"}'; }
+        location @e5xx { default_type application/json; return 502 '{"status":502,"message":"upstream error"}'; }
+
         # -- (1) TLS termination ---------------------------------------------
         ssl_certificate     /etc/nginx/certs/cert.pem;
         ssl_certificate_key /etc/nginx/certs/key.pem;
@@ -129,6 +162,10 @@ http {
         ssl_session_timeout 1h;
 
         location / {
+            # -- Rate limits + strip upstream identity --------------------------
+            limit_req zone=perip    burst=60  nodelay;
+            limit_req zone=pertoken burst=120 nodelay;
+            proxy_hide_header Server;    # drop Chroma/uvicorn Server header on proxied 200s
             # -- Single admission decision. A bare `return` in one `if` is safe;
             # we never stack multiple `if`s (the classification happened in maps).
             if ($allowed = 0) {

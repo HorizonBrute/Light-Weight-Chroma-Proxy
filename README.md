@@ -126,6 +126,17 @@ The sample implements this with nginx `map` blocks (no stacked `if`s): `map "$re
 
 The reader presents nothing. The proxy holds Chroma's single service token and attaches it to every proxied request (`proxy_set_header Authorization "Bearer <CHROMA_TOKEN>"`), so read-only access is frictionless while Chroma still rejects anything bypassing the proxy. A writer presents *your* admission token; the proxy validates it at the edge and then forwards the **same Chroma service token** upstream. Net effect: the writer token is your admission secret (rotate/revoke at the proxy) and **Chroma only ever sees its own token** — the writer's token never reaches it.
 
+### Hardening (defense-in-depth)
+
+Beyond the five-point contract, the sample config is hardened so the front door reveals nothing about itself or Chroma, and absorbs abuse — all **stock nginx**, no third-party modules:
+
+- **`server_tokens off`** — strips the nginx **version** from the `Server` header *and* every error page (not just `403`), killing version/method-enumeration recon. (Removing the *name* `nginx` too would need the `headers_more` module — the deliberate stop; `Server: nginx` with no version is the pragmatic line.)
+- **JSON errors** (`proxy_intercept_errors on` + `error_page … @eNNN`) — uniform `{"status":N,"message":"…"}`, so no nginx name in bodies and no upstream error detail leaks. **`422` is passed through** (Chroma validation detail a client needs).
+- **`proxy_hide_header Server`** — hides Chroma's `uvicorn` banner on proxied `200`s.
+- **Rate limiting** (`limit_req`, JSON `429`) — per-IP and per-token buckets blunt token brute-forcing and read floods.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) → *Hardening* for the rationale and directives.
+
 ### Roles & access tiers
 
 | Role | Presents | Allowed |
