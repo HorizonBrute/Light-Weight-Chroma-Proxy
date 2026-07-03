@@ -21,7 +21,8 @@ sample/
 ├── certs/                          generated cert.pem + key.pem land here (gitignored)
 └── scripts/
     ├── gen-cert.sh                 self-signed cert w/ SAN, key mode 600
-    └── smoke-test.sh               reader/writer PASS/FAIL checks over TLS
+    ├── smoke-test.sh               reader/writer PASS/FAIL checks over TLS (curl)
+    └── client_poc.py               OFFICIAL chromadb client works through the proxy (write/read/deny)
 ```
 
 ## Run it
@@ -42,9 +43,19 @@ cp nginx/writer_tokens.map.example nginx/writer_tokens.map
 # 3. Bring up Chroma + proxy
 docker compose up -d
 
-# 4. Exercise reader vs writer over TLS
+# 4. Exercise reader vs writer over TLS (curl — proves the endpoints)
 ./scripts/smoke-test.sh
+
+# 5. (optional) Prove the OFFICIAL chromadb client works through the proxy
+pip install chromadb-client
+WRITER_TOKEN=$(grep -oP 'WRITER_TOKEN=\K.*' .env) python scripts/client_poc.py
 ```
+
+`client_poc.py` is the stronger proof: it drives the real `chromadb.HttpClient` (a
+writer creates + adds, a reader query/get/counts, and the reader's write is denied
+`403`). It also exercises `GET /api/v2/auth/identity`, which the client calls on
+connect — a route that MUST be in the read allow-list or a reader client can't even
+initialise (see `../docs/ARCHITECTURE.md` → *Proof of concept*).
 
 Tear down with `docker compose down -v` (the `-v` also drops the demo's data volume).
 

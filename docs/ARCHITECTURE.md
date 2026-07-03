@@ -82,6 +82,8 @@ The read/write split above was validated with the **real `chromadb.HttpClient`**
 
 **Finding that fixed the allow-list:** the official client calls **`GET /api/v2/auth/identity`** during `HttpClient()` construction (to resolve its tenant/database). That route was missing from the original read set, so a *reader* client failed to initialise (`403`) while a *writer* (allowed on any path) succeeded — a subtle asymmetry. It is now in the READ table above. **Lesson:** enumerate the allow-list against your client library's *actual* connect trace, not just the documented CRUD endpoints — clients issue identity/handshake calls you won't find in the CRUD reference. Default-deny makes this fail *closed* (safe), but it will block a legitimate reader until the handshake route is allowed.
 
+**Run it yourself.** The sample ships this as a script: [`sample/scripts/client_poc.py`](../sample/scripts/client_poc.py) drives the real `chromadb.HttpClient` against the running sample proxy (writer creates + adds, reader `query`/`get`/`count`s, reader write denied `403`). It needs only `pip install chromadb-client` and uses a trivial built-in embedding function so there's no model to download. See [`sample/README.md`](../sample/README.md) step 5.
+
 ## Credential injection
 
 The reader presents no secret. The proxy holds Chroma's single upstream token and attaches it to every proxied request, so "read-only, no login" is frictionless while Chroma still rejects anything that bypasses the proxy. When a writer presents the write credential, the proxy validates it at the edge and then forwards the same upstream Chroma token. Net effect: the writer credential is *your* admission secret (rotate/revoke it at the proxy); Chroma only ever sees its own service token.
