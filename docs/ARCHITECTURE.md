@@ -44,6 +44,7 @@ plus a few server-level routes. Authoritative operation → class split (from th
 | GET  | `/api/v2/heartbeat` | liveness |
 | GET  | `/api/v2/version` | version |
 | GET  | `…/pre-flight-checks` | limits/config |
+| GET  | `/api/v2/auth/identity` | caller identity — **required by the official `chromadb` client on connect** (see POC below) |
 | GET  | `…/tenants/{tenant}` · `…/databases` · `…/databases/{db}` | list/get tenant & database |
 | GET  | `…/collections` | list collections |
 | GET  | `…/collections/{id}` | get collection |
@@ -69,7 +70,17 @@ plus a few server-level routes. Authoritative operation → class split (from th
 
 > **Critical implementation note.** `query`, `get`, and `count` are **reads that use `POST`** (a request body carries the query) — while `add`/`update`/`upsert`/`delete` are **writes that also use `POST`**. You therefore *cannot* separate read from write by HTTP method. Match on the **path suffix**, and **default-deny** anything unmatched. Default-deny means a route you forgot to classify is *blocked* (fails closed), never silently writable. Verify exact path patterns against the target server's own `/openapi.json` at deploy time, since minor versions drift — but the read/write *operation* split above is stable.
 
-> **Passthrough verified (2026-07).** A real client's full connect handshake — `GET pre-flight-checks` → `version` → `heartbeat` → tenant / databases / database validation → `collections` list — passes the read allow-list end-to-end **through the proxy to Chroma** (`200` with live data: `pre-flight-checks` returned `max_batch_size`/`supports_base64_encoding`, `version` `"1.0.0"`), while `POST …/collections` (create) and any **no-token** request are denied `403`. The collection-level reads (`{id}`, `count`, `query`, `get`) are in the allow-list; exercise them once a collection exists.
+> **Passthrough verified (2026-07).** A real client's full connect handshake — `GET pre-flight-checks` → `version` → `heartbeat` → tenant / databases / database validation → `collections` list — passes the read allow-list end-to-end **through the proxy to Chroma** (`200` with live data: `pre-flight-checks` returned `max_batch_size`/`supports_base64_encoding`, `version` `"1.0.0"`), while `POST …/collections` (create) and any **no-token** request are denied `403`.
+
+## Proof of concept — the official `chromadb` client end to end
+
+The read/write split above was validated with the **real `chromadb.HttpClient`** (not just `curl`) against a hardened TLS instance:
+
+1. A **writer**-token client created a collection and `upsert`ed a real document corpus (77 chunks of Markdown, embedded with a local model), exercising the **write** path.
+2. A **reader**-token client then ran `count` → `query` (nearest-neighbour, real semantic hits) → `get`, exercising the **collection-level reads** (`{id}`, `count`, `query`, `get`) — all `200` through the proxy.
+3. The reader's `upsert` was **denied `403`** — confirming role separation end to end.
+
+**Finding that fixed the allow-list:** the official client calls **`GET /api/v2/auth/identity`** during `HttpClient()` construction (to resolve its tenant/database). That route was missing from the original read set, so a *reader* client failed to initialise (`403`) while a *writer* (allowed on any path) succeeded — a subtle asymmetry. It is now in the READ table above. **Lesson:** enumerate the allow-list against your client library's *actual* connect trace, not just the documented CRUD endpoints — clients issue identity/handshake calls you won't find in the CRUD reference. Default-deny makes this fail *closed* (safe), but it will block a legitimate reader until the handshake route is allowed.
 
 ## Credential injection
 

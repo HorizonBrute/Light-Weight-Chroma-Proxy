@@ -98,6 +98,7 @@ http {
         # reads that travel as POST (a request body carries the query / id list)
         "~^POST:/api/v2/tenants/[^/]+/databases/[^/]+/collections/[^/]+/query/?(\?.*)?$"             1;
         "~^POST:/api/v2/tenants/[^/]+/databases/[^/]+/collections/[^/]+/get/?(\?.*)?$"               1;
+        "~^GET:/api/v2/auth/identity/?(\?.*)?$"  1;   # chromadb client init (get_user_identity)
     }
 
     # -- (2) Writer bearer-token gate ----------------------------------------
