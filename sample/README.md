@@ -1,3 +1,11 @@
+---
+type: Guide
+title: Sample — Docker Compose + nginx
+description: A self-contained, runnable demonstration of the Lightweight Chroma Proxy pattern using Docker Compose and OSS nginx, with instructions to run, verify, and adapt it.
+tags: [sample, guide, docker, nginx, quickstart]
+timestamp: 2026-07-03
+---
+
 # Sample — Docker Compose + nginx
 
 A self-contained, runnable demonstration of the Lightweight Chroma Proxy pattern:
@@ -22,7 +30,8 @@ sample/
 └── scripts/
     ├── gen-cert.sh                 self-signed cert w/ SAN, key mode 600
     ├── smoke-test.sh               reader/writer PASS/FAIL checks over TLS (curl)
-    └── client_poc.py               OFFICIAL chromadb client works through the proxy (write/read/deny)
+    ├── client_poc.py               OFFICIAL chromadb client works through the proxy (write/read/deny)
+    └── testupload_through_gateway.py   stdlib-only UPLOAD smoke test — push docs IN via raw v2 REST
 ```
 
 ## Run it
@@ -56,6 +65,30 @@ writer creates + adds, a reader query/get/counts, and the reader's write is deni
 `403`). It also exercises `GET /api/v2/auth/identity`, which the client calls on
 connect — a route that MUST be in the read allow-list or a reader client can't even
 initialise (see `../docs/ARCHITECTURE.md` → *Proof of concept*).
+
+Where `client_poc.py` needs `chromadb-client`, `testupload_through_gateway.py` proves
+the same **upload** path with **zero dependencies** — pure Python stdlib against the raw
+Chroma v2 REST API through the proxy. It creates a collection, uploads every top-level
+`*.md` in a docs dir as one document each, then reads them back (count + get by id). Run
+it against **any** gateway-fronted Chroma, not just this sample:
+
+```bash
+CHROMA_WRITER_TOKEN=$(grep -oP 'WRITER_TOKEN=\K.*' .env) \
+CHROMA_GATEWAY_BASE=https://127.0.0.1:8443 \
+CHROMA_COLLECTION=upload_smoke \
+python scripts/testupload_through_gateway.py ./docs
+```
+
+Everything is env/argv driven with documented defaults — `CHROMA_WRITER_TOKEN` (required),
+`CHROMA_GATEWAY_BASE`, `CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_COLLECTION`,
+`CHROMA_DOCS_DIR` (or `argv[1]`), and `CHROMA_TLS_VERIFY` (a CA-cert path to verify TLS,
+else it skips verify like `curl -k`). See the script header for the full list.
+
+> **Placeholder-embedding caveat:** the embedding vectors are deterministic hashes, **not**
+> semantic embeddings. Upload, storage, and retrieval **by id / metadata** are real; a
+> **semantic query is NOT meaningful** until you re-ingest with a real embedding function.
+> Record data always enters through the client API / proxy, never by writing raw files into
+> the store.
 
 Tear down with `docker compose down -v` (the `-v` also drops the demo's data volume).
 

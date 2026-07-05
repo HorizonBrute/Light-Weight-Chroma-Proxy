@@ -1,3 +1,11 @@
+---
+type: Overview
+title: Lightweight Chroma Proxy
+description: A reverse-proxy configuration pattern that adds TLS termination and role-based admission control in front of ChromaDB, with no application code and no Chroma RBAC.
+tags: [chromadb, reverse-proxy, tls, rbac, admission-control, security]
+timestamp: 2026-07-03
+---
+
 # Lightweight Chroma Proxy
 
 **TLS termination and role-based admission control for [ChromaDB](https://www.trychroma.com/) — as a reverse-proxy configuration pattern. No application code, no Chroma RBAC, no CA to run, and no dependency on Docker or any specific proxy.**
@@ -57,6 +65,29 @@ Two roles, decided entirely at the proxy:
 | **writer** | a bearer token | everything the reader can, **plus** `add` / `update` / `upsert` / `delete`, create/delete collections, `reset` |
 
 The read and write sets both use `POST` for some operations, so the split is enforced by **path**, and everything unlisted is **denied by default** — the proxy fails *closed*. Full endpoint map in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
+## Beyond Chroma: a multi-service front
+
+The same proxy generalizes to a **multi-service front** — Chroma plus **other backend services**, each on
+its own listener with its **own** two-role, default-deny, path-based allow-list, all sharing the proxy's
+TLS, tokens, hardening, and rate-limiting. A natural second upstream is a **model server such as Ollama**,
+which has the *same two gaps as Chroma, sharper*: no native TLS, and **no auth of any kind** — every
+endpoint, *including destructive management (`pull`/`create`/`delete`/…)*, is open to anyone who can reach
+it (`OLLAMA_ORIGINS` is a CORS allow-list, not auth). So the proxy supplies the **entire** auth layer the
+service lacks, splitting it into a **use** role (all inference, incl. the OpenAI-compatible `/v1/*` routes)
+and an **admin** role (use **+** model-store management) — management never reachable by a use token.
+Exposure is **opt-in and sealed by default** (no listener until you turn one on), and each exposed listener
+picks **TLS off or enforced**.
+
+To keep multiple services administrable, drive the maps from **one unified token registry**: each token is
+listed **once** with a per-service role grant (`{ chroma: reader, ollama: use }`), and tooling **generates**
+the per-service role maps from it — so a key is defined once, never hand-copied across files, and adding a
+future service is a new grant field, not a new hand-maintained map convention. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) → *Fronting multiple services* (incl. *The
+authorization-filtering mechanism* — the generalized, provider-agnostic POC of imposing bearer-token roles
+on an auth-free upstream) and *Unified token registry*.
 
 ---
 

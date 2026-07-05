@@ -1,3 +1,11 @@
+---
+type: Architecture
+title: Architecture & Design
+description: The design of the Lightweight Chroma Proxy pattern — the reverse-proxy contract, endpoint allow-list, credential injection, access tiers, cert model, hardening, and threat model.
+tags: [architecture, design, chromadb, allow-list, threat-model, hardening]
+timestamp: 2026-07-03
+---
+
 # Architecture & Design
 
 ## The problem (verified against current Chroma, 2026-07)
@@ -101,6 +109,115 @@ Compose the two roles with a network boundary; a firewall rule ships with any ne
 
 Localhost read-write with no token is fine (only local processes). Write-on-LAN without a token is the one to make an explicit, eyes-open choice.
 
+## Fronting multiple services (one proxy, many upstreams)
+
+The pattern generalizes past Chroma. The same proxy in front of Chroma can front **additional backend
+services** on their own listeners, each with its **own role-based endpoint allow-list**, while sharing the
+proxy's TLS material, token mechanism, hardening, and rate-limiting. The proxy becomes a **multi-service
+front**, not a Chroma-only shim.
+
+A concrete second upstream is a **model server (e.g. Ollama)** — a natural fit because it shares Chroma's
+two gaps in an even sharper form:
+
+- **No native TLS** — plain HTTP, so the edge proxy supplies HTTPS.
+- **No auth at all** — Ollama ships **zero** authentication and **zero** authorization: no tokens, no
+  roles, no users. *Every* endpoint (including destructive management: `pull` / `create` / `copy` /
+  `push` / `delete`) is open to anyone who can reach it. (`OLLAMA_ORIGINS` is a **CORS allow-list, not
+  auth**.) So the proxy doesn't merely *scope* access as with Chroma — it supplies the **entire** auth
+  layer the service lacks.
+
+**Per-service roles, same admission-control shape.** Each service defines its own two-role split as a
+default-deny, path-based allow-list — the exact mechanism used for Chroma reader/writer:
+
+| Service | "read/use" role | "write/admin" role |
+|---------|-----------------|--------------------|
+| Chroma  | **reader** — `heartbeat`/`version`, list/get, `query`/`get`/`count` | **writer** — reader **+** `add`/`update`/`upsert`/`delete`, create/delete collections, `reset` |
+| Model server (Ollama) | **use** — all inference: `/api/embeddings`, `/api/embed`, `/api/generate`, `/api/chat`, `/api/tags`, `/api/show`, `/api/ps`, `/api/version`, and all `/v1/*` OpenAI-compatible routes | **admin** — use **+** store management: `/api/pull`, `/api/create`, `/api/copy`, `/api/push`, `DELETE /api/delete`, `/api/blobs/*` |
+
+> **Hard rule (same as Chroma's `reset`):** the destructive **management** routes are **never** reachable
+> by the read/use role — even in a bare-minimum exposure. And as with Chroma, inference and management
+> both use `POST`, so the split is by **path**, default-deny (a route you forgot to classify fails
+> *closed*). Pre-listing the OpenAI-compatible `/v1/*` routes in the `use` set keeps the allow-list
+> scaffold-ready even before a client uses them.
+
+**Exposure is opt-in and sealed by default.** A backend the proxy *can* front need not be *exposed*: the
+default posture is **no listener** (the service stays reachable only on the internal trusted network, as
+Chroma is never published directly). Turn a service's listener on deliberately. **TLS modes** per exposed
+service are **`off`** (plain HTTP on the service port) or **`enforced`** (HTTPS, TLS terminated at the
+proxy reusing its cert) — the same two-state edge choice, per listener.
+
+### The authorization-filtering mechanism (the POC, generalized)
+
+This is the core of the pattern for an **auth-free upstream**: the proxy imposes bearer-token *authorization*
+that the backend has no concept of, using nothing but request inspection + default-deny maps. Ollama is the
+worked example, but the mechanism is provider-agnostic — any auth-free HTTP service gets role separation the
+same way. Two independent facts are derived per request, then combined:
+
+1. **Which route class is this?** Two default-deny, path-matched maps classify the request:
+   `$is_inference` = 1 for a `use` route (embeddings/generate/chat/tags/…, `/v1/*`); `$is_management` = 1
+   for an `admin` route (`pull`/`create`/`copy`/`push`/`delete`/`blobs`). A path in neither stays `0/0` →
+   denied. (Inference and management both `POST`, so classification is by **path**, never method.)
+2. **What role does the token hold?** Two token maps — generated from the unified registry (below) — set
+   `$is_use` and `$is_admin` from the presented bearer token (either may be 0).
+
+The admission decision is a single **default-deny composite** over those four bits — allow only the
+enumerated combinations, deny everything else:
+
+| route \ token | use only | admin (or use+admin) | no/invalid token |
+|---------------|----------|----------------------|------------------|
+| **inference** | ✅ allow  | ✅ allow             | ❌ 403           |
+| **management**| ❌ **403** | ✅ allow            | ❌ 403           |
+
+The one load-bearing cell is **management + use-only → deny**: the destructive routes are **never** reachable
+by a use token, by construction (that combination is simply absent from the allow-list, so it falls through
+to the default deny). Roles are a **superset** — an admin token passes both inference and management — so
+tokens are not duplicated across maps; the superset lives here in the admission table, not in the membership
+lists. Switching authz strictness is just swapping this one composite map: `token-role` (the table above),
+`token` (any valid token = use; management still admin-only), or `open` (inference needs no token; management
+still admin-only). **The whole authorization filter is this: two path maps, two token maps, one composite —
+no code, no backend change.**
+
+**Safe-by-construction exposure.** Because an auth-free upstream is only as safe as the proxy in front of it,
+the reference implementation keeps *all* of a service's proxy config (its upstream, maps, and listener) behind
+a single **glob include that resolves to nothing when the service is sealed** — so a proxy fronting other
+services can't be broken by (for example) a model server that isn't running, and the sealed default path is
+byte-identical to not having the feature at all.
+
+> **Two-upstream path verified end-to-end (2026-07).** The full consumer path across *both* upstreams was
+> driven through the proxy on the Horizon AIOS brain gateway (its production instance, ADRs 0009/0010/0013):
+> a **use** token embedded documents via Ollama (`/api/tags` → `/api/embed`, 768-dim), a **writer** token
+> created a Chroma collection and added those docs, a semantic `query` returned the correct nearest neighbour,
+> and the collection was deleted — all `200/201`, residue-free. Confirms the per-service role split (Ollama
+> `use` + Chroma `writer`) composes cleanly through one proxy. (Note against current Chroma **1.0.0**:
+> collection names must match `[a-zA-Z0-9._-]{3,512}` starting/ending alphanumeric — a bad name is a genuine
+> Chroma `400`, which the proxy's `proxy_intercept_errors` then masks to a generic body.)
+
+## Unified token registry (one source of truth → generated per-service maps)
+
+Once the proxy fronts more than one service, "a `map` file per service per role" means the **same key gets
+hand-copied into multiple files and must be kept absent from others** — error-prone and worse with every
+service added. Instead, use **one authoritative token-registry file** as the single source of truth, and
+**generate** the per-service role maps from it.
+
+Each token is listed **once**, with a **per-service role grant**; a token may be granted on one service,
+several, or all — each grant honored independently:
+
+```yaml
+- token: <bearer-1>
+  grants: { chroma: reader, ollama: use }   # reads Chroma AND runs inference; no writes, no model mgmt
+- token: <bearer-2>
+  grants: { ollama: admin }                 # manages the model store; no Chroma access at all
+- token: <bearer-3>
+  grants: { chroma: writer }                # writes Chroma; no model access
+```
+
+Backend tooling **emits** the per-service proxy maps (Chroma `reader`/`writer`, model-server `use`/`admin`,
+…) from this one file at build/apply time. The admin **edits one file**; a key is never hand-synced across
+maps, and because each map is regenerated, revoking a token in the registry removes it from every map it
+was in — **no orphaned keys**. Adding a future service is then just a new grant field plus the generator
+emitting its map — **new services cost data, not a new hand-maintained file convention.** The registry is
+the admin-editable source of truth; the generated `.map` files are runtime artifacts (never hand-edited).
+
 ## TLS / certificate model
 
 - **Self-signed by default**, generated at install with a correct SAN, private key permission-locked to the proxy identity.
@@ -120,10 +237,11 @@ The admission control above is the *functional* core; these directives make the 
 - **Uniform JSON errors — `proxy_intercept_errors on` + `error_page … @eNNN`.** Every gateway-generated error (the `403` from the admission gate, plus `400`/`405`/`413`/`429`) and intercepted upstream error returns `{"status":N,"message":"…"}` instead of nginx's HTML — no nginx name in the body, and **backend error detail never escapes**. One deliberate exception: **`422` is *not* intercepted** — Chroma/FastAPI validation errors carry field detail a legitimate client needs.
 - **Hide the backend — `proxy_hide_header Server`.** Drops Chroma's own `Server` (e.g. `uvicorn`) on proxied `200`s so the upstream stack is invisible; nginx re-stamps its own bare `Server: nginx`.
 - **Rate limiting — `limit_req_zone` + `limit_req` (`429`).** Per-client-IP and per-bearer-token leaky buckets (sample: `30r/s` and `60r/s` with matching bursts), returning a JSON `429`. Blunts brute-forcing the write token and abusive read floods. Rates are literal — tune per exposure tier.
+- **Intrusion banning — fail2ban companion (optional edge layer).** Rate limiting *throttles* a burst but has no memory: an IP that keeps probing the write token (repeated `403`s from the default-deny admission map, §"Role-based admission control") stays free to keep probing, just at the rate limit. The companion to the authorization filtering is to *ban* a persistent abuser: a fail2ban sidecar watches the JSON access log (§Logging — real client IP, never the token) and, after `maxretry` denials in `findtime`, bans the source IP for `bantime`, then self-heals (auto-unban). Done as a sidecar sharing the proxy container's network namespace with only `NET_ADMIN`, the ban is L3 (`iptables`), dropped *before* nginx — so the allow-list config is untouched. This is the production posture of the Horizon AIOS brain gateway (its ADR 0012); the failure signal is exactly this pattern's default-deny `403`. Correctness depends on the log showing real client IPs (not a SNAT'd container address) — verify per deployment.
 
 ## Threat model & ceiling
 
-**Protects against:** plaintext exposure on the wire (TLS); unauthenticated or read-only clients performing writes/deletes/`reset` (admission control + default-deny); direct database exposure (Chroma is never published — only the proxy is); **server/backend fingerprinting** (version + identity suppression) and **request floods / token brute-forcing** (rate limiting).
+**Protects against:** plaintext exposure on the wire (TLS); unauthenticated or read-only clients performing writes/deletes/`reset` (admission control + default-deny); direct database exposure (Chroma is never published — only the proxy is); **server/backend fingerprinting** (version + identity suppression); **request floods / token brute-forcing** (rate limiting); and, with the fail2ban companion, a **persistent token-probing source** (banned at L3 after repeated `403`s, then self-healed).
 
 **Ceiling (by design):** this is not per-user identity. It is two roles keyed on one write credential. When you need per-user tokens with **expiry, scopes, or lifecycle**, graduate to a real authorization layer (a Chroma authz provider, Envoy RBAC, OpenFGA, or a full API gateway). This project is the pragmatic tier *below* that — and names exactly where the line is.
 
