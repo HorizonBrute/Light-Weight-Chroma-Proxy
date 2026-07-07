@@ -11,3 +11,7 @@
 # generated cert dir contents (dir kept via .gitkeep)
 sample/certs/*
 !sample/certs/.gitkeep
+
+# Python build noise — never commit compiled artifacts
+__pycache__/
+*.pyc

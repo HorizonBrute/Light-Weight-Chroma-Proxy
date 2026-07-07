@@ -8,7 +8,7 @@ timestamp: 2026-07-04
 
 # Gateway Auth — By-Hand Verification Matrix
 
-**Applies to:** a deployed bearer-token gateway running in **authz mode C** (reader token required for reads, writer token for writes, no-token denied). This is the reference verification for the Horizon AIOS brain deployment of this proxy pattern; env-var names below are that deployment's (`sorcerypunk_dev` brain).
+**Applies to:** a deployed bearer-token gateway running in **authz mode C** (reader token required for reads, writer token for writes, no-token denied). This is a reference verification for a proxy deployment of this pattern; the env-var names below (`EXAMPLE_CHROMA_R` / `EXAMPLE_CHROMA_RW`) are placeholders — substitute whatever your deployment uses. The port (`:8000` here) is likewise deployment-specific; the runnable sample in this repo uses `:8443`.
 **Audience:** the gateway **operator**. Copy-paste, top to bottom, to prove auth is live.
 
 ---
@@ -30,12 +30,12 @@ The gateway is the auth boundary. A **reader** token may only read; a **writer**
 
 ## 1. Setup (PowerShell)
 
-Tokens come from your shell env vars — reader `SORCERYPUNK_DEV_CHROMA_R`, writer `SORCERYPUNK_DEV_CHROMA_RW` (schema `<BRAIN>_CHROMA_R` / `<BRAIN>_CHROMA_RW`, FULL brain name uppercased). Gateway at `https://127.0.0.1:8000`. The Chroma v2 collections path includes tenant + database.
+Tokens come from your shell env vars — reader `EXAMPLE_CHROMA_R`, writer `EXAMPLE_CHROMA_RW` (pick any naming scheme your deployment prefers). Gateway at `https://127.0.0.1:8000`. The Chroma v2 collections path includes tenant + database.
 
 ```powershell
 # --- setup (PowerShell) ---
-$RD = $env:SORCERYPUNK_DEV_CHROMA_R    # reader token
-$WR = $env:SORCERYPUNK_DEV_CHROMA_RW   # writer token
+$RD = $env:EXAMPLE_CHROMA_R    # reader token
+$WR = $env:EXAMPLE_CHROMA_RW   # writer token
 $COL = "https://127.0.0.1:8000/api/v2/tenants/default_tenant/databases/default_database/collections"
 ```
 
@@ -92,12 +92,12 @@ def client(tok):
                                headers={"Authorization": f"Bearer {tok}"})
 
 # READ  (reader or writer) -> nanosecond int
-print(client(os.environ["SORCERYPUNK_DEV_CHROMA_R"]).heartbeat())
+print(client(os.environ["EXAMPLE_CHROMA_R"]).heartbeat())
 
 # WRITE (writer) -> count 1 -> deleted
-wc  = client(os.environ["SORCERYPUNK_DEV_CHROMA_RW"])
+wc  = client(os.environ["EXAMPLE_CHROMA_RW"])
 col = wc.create_collection("auth_probe", get_or_create=True)
-col.add(ids=["1"], embeddings=[[0.1, 0.2, 0.3, 0.4]], documents=["hello brain"])  # explicit embeddings = no model download
+col.add(ids=["1"], embeddings=[[0.1, 0.2, 0.3, 0.4]], documents=["hello world"])  # explicit embeddings = no model download
 print(col.count())                    # -> 1
 wc.delete_collection("auth_probe")    # cleanup
 

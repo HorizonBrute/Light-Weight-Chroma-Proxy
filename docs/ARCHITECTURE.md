@@ -39,6 +39,15 @@ Two roles, decided entirely at the proxy — no Chroma authz involved:
 
 This deliberately delivers the common 80% — "everyone can read, only holders of the token can write" — without building or running an authorization engine. See *Ceiling* below for where it stops.
 
+**Authorization modes (how strict the reader is).** The reader's treatment is a swappable posture, decided by one composite map:
+
+| Mode | Reader | Writer | No token | When to use |
+|------|--------|--------|----------|-------------|
+| **B — open reads** | presents **nothing**, reads allowed | write token required | reads still allowed | localhost / trusted-network tiers; the `sample/` ships this |
+| **C — token-role** | read-only **reader token** required | write token required | **denied `403`** | **recommended default for any network-exposed deployment** |
+
+The table above shows the reader in **mode B** (presents nothing). Moving to mode C is a single map change — add a reader-token map and deny the no-token case; nothing else in the pattern moves. Mode C is the reference posture exercised in the verification matrix (`docs/gateway_auth_verification_matrix.md`): every request carries a token, the reader token is read-only, and no-token is a hard `403`.
+
 ## The endpoint map (the allow-list)
 
 ChromaDB v2 routes are scoped under
@@ -184,7 +193,7 @@ services can't be broken by (for example) a model server that isn't running, and
 byte-identical to not having the feature at all.
 
 > **Two-upstream path verified end-to-end (2026-07).** The full consumer path across *both* upstreams was
-> driven through the proxy on the Horizon AIOS brain gateway (its production instance, ADRs 0009/0010/0013):
+> driven through the proxy on a production deployment of this pattern:
 > a **use** token embedded documents via Ollama (`/api/tags` → `/api/embed`, 768-dim), a **writer** token
 > created a Chroma collection and added those docs, a semantic `query` returned the correct nearest neighbour,
 > and the collection was deleted — all `200/201`, residue-free. Confirms the per-service role split (Ollama
@@ -211,8 +220,10 @@ several, or all — each grant honored independently:
   grants: { chroma: writer }                # writes Chroma; no model access
 ```
 
-Backend tooling **emits** the per-service proxy maps (Chroma `reader`/`writer`, model-server `use`/`admin`,
-…) from this one file at build/apply time. The admin **edits one file**; a key is never hand-synced across
+This is **implemented, not aspirational**: a generator reads the one registry file and **emits** the
+per-service proxy maps (Chroma `reader`/`writer`, model-server `use`/`admin`, …) at build/apply time,
+and a production deployment of this pattern runs exactly that pipeline (registry → generated `.map`
+artifacts). The admin **edits one file**; a key is never hand-synced across
 maps, and because each map is regenerated, revoking a token in the registry removes it from every map it
 was in — **no orphaned keys**. Adding a future service is then just a new grant field plus the generator
 emitting its map — **new services cost data, not a new hand-maintained file convention.** The registry is
@@ -229,6 +240,18 @@ the admin-editable source of truth; the generated `.map` files are runtime artif
 
 Structured (JSON) access log at the proxy — the single choke point, so it doubles as the front-door audit trail even when no auth is enforced: source, timestamp, method, path, role (reader/writer), status, bytes. Rotate on a configurable schedule (default 30 days) so it never fills the host. Aggregation to a SIEM is left to the deployer.
 
+**Optional content inspection.** Because the proxy already sees every request, a deployment can extend this access log to full **content-inspection** logging — capturing request bodies (and, via a response-body filter, upstream responses up to a size cap) alongside the role/route metadata. It is a heavier, opt-in posture (log volume and sensitivity both rise), so it is off in the sample; it is called out here because the same choke point makes it a natural extension.
+
+## Production extensions (beyond this POC)
+
+This repo distills the **read/write core** of the pattern. A real deployment of it layers on further capability using the *same* proxy-only mechanics — noted here generically so the distillation stays honest about its scope:
+
+- **Per-target path routing.** Beyond a fixed upstream, the edge can match a **structured path prefix** (e.g. `/{group}/{target}/<suffix>`), require a route-scoped bearer, resolve the target service by name on an internal network **at request time**, strip the client credential, and forward the suffix untouched — a generic reverse-proxy router built from the same default-deny maps.
+- **Dual-homed internal routing.** The proxy can sit on both an edge network and an internal service network, exposing plain internal listeners to trusted callers while presenting the TLS edge outward, and swapping a caller's scoped token for the upstream service token on the internal hop.
+- **Generated configuration.** The listener/map/token config can be **generated** from the unified token registry plus a small posture file, rather than hand-written — the model described under *Unified token registry*.
+
+These are extensions of the identical contract (TLS edge, path-based default-deny, credential injection, one audit log), not a different design.
+
 ## Hardening (defense-in-depth)
 
 The admission control above is the *functional* core; these directives make the proxy **quiet and abuse-resistant** at the edge. All are stock-nginx (no third-party modules), mode-agnostic, and included in the sample `nginx.conf.template`. They sit *outside* the five-point contract — not required to make the pattern work — but are strongly recommended for any network-exposed tier: the front door should reveal nothing about itself or what's behind it, and should absorb abuse.
@@ -237,7 +260,7 @@ The admission control above is the *functional* core; these directives make the 
 - **Uniform JSON errors — `proxy_intercept_errors on` + `error_page … @eNNN`.** Every gateway-generated error (the `403` from the admission gate, plus `400`/`405`/`413`/`429`) and intercepted upstream error returns `{"status":N,"message":"…"}` instead of nginx's HTML — no nginx name in the body, and **backend error detail never escapes**. One deliberate exception: **`422` is *not* intercepted** — Chroma/FastAPI validation errors carry field detail a legitimate client needs.
 - **Hide the backend — `proxy_hide_header Server`.** Drops Chroma's own `Server` (e.g. `uvicorn`) on proxied `200`s so the upstream stack is invisible; nginx re-stamps its own bare `Server: nginx`.
 - **Rate limiting — `limit_req_zone` + `limit_req` (`429`).** Per-client-IP and per-bearer-token leaky buckets (sample: `30r/s` and `60r/s` with matching bursts), returning a JSON `429`. Blunts brute-forcing the write token and abusive read floods. Rates are literal — tune per exposure tier.
-- **Intrusion banning — fail2ban companion (optional edge layer).** Rate limiting *throttles* a burst but has no memory: an IP that keeps probing the write token (repeated `403`s from the default-deny admission map, §"Role-based admission control") stays free to keep probing, just at the rate limit. The companion to the authorization filtering is to *ban* a persistent abuser: a fail2ban sidecar watches the JSON access log (§Logging — real client IP, never the token) and, after `maxretry` denials in `findtime`, bans the source IP for `bantime`, then self-heals (auto-unban). Done as a sidecar sharing the proxy container's network namespace with only `NET_ADMIN`, the ban is L3 (`iptables`), dropped *before* nginx — so the allow-list config is untouched. This is the production posture of the Horizon AIOS brain gateway (its ADR 0012); the failure signal is exactly this pattern's default-deny `403`. Correctness depends on the log showing real client IPs (not a SNAT'd container address) — verify per deployment.
+- **Intrusion banning — fail2ban companion (optional edge layer).** Rate limiting *throttles* a burst but has no memory: an IP that keeps probing the write token (repeated `403`s from the default-deny admission map, §"Role-based admission control") stays free to keep probing, just at the rate limit. The companion to the authorization filtering is to *ban* a persistent abuser: a fail2ban sidecar watches the JSON access log (§Logging — real client IP, never the token) and, after `maxretry` denials in `findtime`, bans the source IP for `bantime`, then self-heals (auto-unban). Done as a sidecar sharing the proxy container's network namespace with only `NET_ADMIN`, the ban is L3 (`iptables`), dropped *before* nginx — so the allow-list config is untouched. This is the production posture of a real deployment of this pattern; the failure signal is exactly this pattern's default-deny `403`. Correctness depends on the log showing real client IPs (not a SNAT'd container address) — verify per deployment.
 
 ## Threat model & ceiling
 

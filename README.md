@@ -66,6 +66,13 @@ Two roles, decided entirely at the proxy:
 
 The read and write sets both use `POST` for some operations, so the split is enforced by **path**, and everything unlisted is **denied by default** — the proxy fails *closed*. Full endpoint map in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+**Authorization modes.** How the *reader* is treated is a deliberate, swappable choice — the same maps, one composite flipped:
+
+- **Mode B — open reads:** the reader presents **nothing**; reads are allowed without any token, writes still require the writer token. Frictionless read-only access, best for localhost / trusted-network tiers. **This is what the runnable `sample/` ships** by default.
+- **Mode C — token-role (recommended default for any network-exposed deployment):** *every* request needs a token — a read-only **reader** token for reads, the **writer** token for writes, and **no token is denied outright** (`403`). This is the posture proven in [`docs/gateway_auth_verification_matrix.md`](docs/gateway_auth_verification_matrix.md).
+
+Switching from B to C is one map change: add a reader-token map and deny the no-token case. Mode C is the safe default when the proxy is reachable beyond `localhost`; mode B is the convenience tier. The role table above shows the reader in **mode B** (presents nothing).
+
 ---
 
 ## Beyond Chroma: a multi-service front
