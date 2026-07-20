@@ -1,5 +1,5 @@
 # =============================================================================
-# Lightweight Chroma Proxy — nginx reference configuration
+# Lightweight Secure Chroma Proxy — nginx reference configuration
 # =============================================================================
 # This is the whole pattern in one file. Copy the map + location blocks into
 # whatever reverse proxy you already run; nothing here is nginx-Plus-only.

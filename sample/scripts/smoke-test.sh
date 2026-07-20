@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for the Lightweight Chroma Proxy sample.
+# Smoke test for the Lightweight Secure Chroma Proxy sample.
 #
 # Exercises the read/write admission control end-to-end over TLS against the
 # proxy on 127.0.0.1:8443. Prints PASS/FAIL per case; exits non-zero on any
@@ -51,7 +51,7 @@ req() {
     BODY="${out%$'\n'*}"
 }
 
-echo "=== Lightweight Chroma Proxy smoke test ( ${BASE} ) ==="
+echo "=== Lightweight Secure Chroma Proxy smoke test ( ${BASE} ) ==="
 
 # --- wait for readiness (proxy serving + Chroma accepting connections) ------
 # No compose healthcheck (the Chroma image has no in-container HTTP client), so

@@ -24,7 +24,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
     -keyout "${KEY}" \
     -out "${CERT}" \
     -days 3650 \
-    -subj "/CN=localhost/O=Lightweight Chroma Proxy Demo" \
+    -subj "/CN=localhost/O=Lightweight Secure Chroma Proxy Demo" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 
 chmod 600 "${KEY}"

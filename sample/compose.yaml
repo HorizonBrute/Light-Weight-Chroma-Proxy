@@ -1,4 +1,4 @@
-# Lightweight Chroma Proxy — runnable sample
+# Lightweight Secure Chroma Proxy — runnable sample
 #
 # Two services on a private network:
 #   * chroma — ChromaDB, requires its static service token, NEVER published to the host.

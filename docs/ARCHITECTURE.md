@@ -1,7 +1,7 @@
 ---
 type: Architecture
 title: Architecture & Design
-description: The design of the Lightweight Chroma Proxy pattern — the reverse-proxy contract, endpoint allow-list, credential injection, access tiers, cert model, hardening, and threat model.
+description: The design of the Lightweight Secure Chroma Proxy pattern — the reverse-proxy contract, endpoint allow-list, credential injection, access tiers, cert model, hardening, and threat model.
 tags: [architecture, design, chromadb, allow-list, threat-model, hardening]
 timestamp: 2026-07-03
 ---

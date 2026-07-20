@@ -1,14 +1,14 @@
 ---
 type: Guide
 title: Sample — Docker Compose + nginx
-description: A self-contained, runnable demonstration of the Lightweight Chroma Proxy pattern using Docker Compose and OSS nginx, with instructions to run, verify, and adapt it.
+description: A self-contained, runnable demonstration of the Lightweight Secure Chroma Proxy pattern using Docker Compose and OSS nginx, with instructions to run, verify, and adapt it.
 tags: [sample, guide, docker, nginx, quickstart]
 timestamp: 2026-07-03
 ---
 
 # Sample — Docker Compose + nginx
 
-A self-contained, runnable demonstration of the Lightweight Chroma Proxy pattern:
+A self-contained, runnable demonstration of the Lightweight Secure Chroma Proxy pattern:
 OSS nginx terminates TLS, enforces a **default-deny read-only allow-list**, gates
 writes behind a bearer token, and injects Chroma's service token upstream. Chroma
 itself is never exposed to the host.

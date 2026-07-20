@@ -1,12 +1,12 @@
 ---
 type: Overview
-title: Lightweight Chroma Proxy
+title: Lightweight Secure Chroma Proxy
 description: A reverse-proxy configuration pattern that adds TLS termination and role-based admission control in front of ChromaDB, with no application code and no Chroma RBAC.
 tags: [chromadb, reverse-proxy, tls, rbac, admission-control, security]
 timestamp: 2026-07-03
 ---
 
-# Lightweight Chroma Proxy
+# Lightweight Secure Chroma Proxy
 
 **TLS termination and role-based admission control for [ChromaDB](https://www.trychroma.com/) — as a reverse-proxy configuration pattern. No application code, no Chroma RBAC, no CA to run, and no dependency on Docker or any specific proxy.**
 
@@ -215,7 +215,7 @@ The endpoint read/write split and the two verified gaps are grounded in Chroma's
 Design complete and the endpoint allow-list is pinned. The runnable sample (Docker Compose + OSS nginx) is implemented in [`sample/`](sample/).
 
 ```
-lightweight-chroma-proxy/
+lightweight-secure-chroma-proxy/
 ├── README.md              ← you are here
 ├── docs/
 │   └── ARCHITECTURE.md    ← design, endpoint allow-list, threat model, tiers, cert model

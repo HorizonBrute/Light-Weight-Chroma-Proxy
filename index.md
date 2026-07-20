@@ -2,7 +2,7 @@
 okf_version: "0.1"
 ---
 
-# Lightweight Chroma Proxy
+# Lightweight Secure Chroma Proxy
 
 * [Overview (README)](README.md) - A reverse-proxy configuration pattern that adds TLS termination and role-based admission control in front of ChromaDB, with no application code and no Chroma RBAC.
 
